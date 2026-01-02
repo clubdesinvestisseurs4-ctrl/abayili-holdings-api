@@ -22,6 +22,37 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/users/:uid - Récupérer un utilisateur
+router.get('/:uid', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    
+    // Un utilisateur peut voir son propre profil, admin peut tout voir
+    if (uid !== req.user.uid && req.user.role !== 'admin_treasury') {
+      return res.status(403).json({ error: 'Accès non autorisé' });
+    }
+    
+    const db = getDb();
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      // Si l'utilisateur n'existe pas dans Firestore, retourner les infos de base
+      return res.json({
+        id: uid,
+        uid: uid,
+        email: req.user.email,
+        name: req.user.email?.split('@')[0] || 'Utilisateur',
+        role: 'collaborator',
+        companies: ['abayili_invest', 'abayili_consulting', 'ai_for_afrika']
+      });
+    }
+    
+    res.json({ id: userDoc.id, ...userDoc.data() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // POST /api/users - Créer un utilisateur (admin uniquement)
 router.post('/', async (req, res) => {
   try {

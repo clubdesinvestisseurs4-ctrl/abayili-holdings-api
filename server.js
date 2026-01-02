@@ -142,25 +142,6 @@ const startServer = async () => {
     app.use('/api/users', authMiddleware, userRoutes);
     app.use('/api/analytics', authMiddleware, analyticsRoutes);
 
-    // Route utilisateur actuel
-    app.get('/api/users/:uid', authMiddleware, async (req, res) => {
-      try {
-        if (req.params.uid !== req.user.uid && req.user.role !== 'admin_treasury') {
-          return res.status(403).json({ error: 'Accès non autorisé' });
-        }
-        
-        const db = getDb();
-        const userDoc = await db.collection('users').doc(req.params.uid).get();
-        if (!userDoc.exists) {
-          return res.status(404).json({ error: 'Utilisateur non trouvé' });
-        }
-        
-        res.json({ id: userDoc.id, ...userDoc.data() });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-
     // Upload de fichiers
     app.post('/api/upload/report', authMiddleware, requireRole('admin_treasury'), upload.single('file'), async (req, res) => {
       try {
