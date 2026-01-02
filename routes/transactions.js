@@ -13,16 +13,20 @@ router.get('/:companyId', async (req, res) => {
     const { companyId } = req.params;
     const { type, status, startDate, endDate } = req.query;
 
-    let query = db.collection('transactions').where('companyId', '==', companyId);
-
-    if (type) query = query.where('type', '==', type);
-    if (status) query = query.where('status', '==', status);
-
-    const snapshot = await query.orderBy('date', 'desc').limit(100).get();
+    // Requête simple sans orderBy pour éviter les index composites
+    const snapshot = await db.collection('transactions')
+      .where('companyId', '==', companyId)
+      .get();
     
     let transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    // Filtres de date côté serveur
+    // Filtres côté serveur
+    if (type) {
+      transactions = transactions.filter(t => t.type === type);
+    }
+    if (status) {
+      transactions = transactions.filter(t => t.status === status);
+    }
     if (startDate) {
       transactions = transactions.filter(t => t.date >= startDate);
     }
@@ -30,8 +34,19 @@ router.get('/:companyId', async (req, res) => {
       transactions = transactions.filter(t => t.date <= endDate);
     }
 
+    // Tri côté serveur
+    transactions.sort((a, b) => {
+      const dateA = a.date || '';
+      const dateB = b.date || '';
+      return dateB.localeCompare(dateA);
+    });
+
+    // Limiter à 100 résultats
+    transactions = transactions.slice(0, 100);
+
     res.json(transactions);
   } catch (error) {
+    console.error('Erreur GET transactions:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -67,6 +82,7 @@ router.post('/', async (req, res) => {
 
     res.status(201).json({ id: docRef.id, ...transaction, status });
   } catch (error) {
+    console.error('Erreur POST transaction:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -108,6 +124,7 @@ router.put('/:id/status', async (req, res) => {
 
     res.json({ id, status });
   } catch (error) {
+    console.error('Erreur PUT transaction status:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -119,6 +136,7 @@ router.delete('/:id', async (req, res) => {
     await db.collection('transactions').doc(req.params.id).delete();
     res.json({ success: true });
   } catch (error) {
+    console.error('Erreur DELETE transaction:', error);
     res.status(400).json({ error: error.message });
   }
 });

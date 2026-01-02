@@ -32,13 +32,15 @@ router.get('/:companyId/metrics', async (req, res) => {
 
     const startDateStr = startDate.toISOString().split('T')[0];
 
-    // Récupérer les transactions
+    // Requête simple sans filtre de date pour éviter les index composites
     const snapshot = await db.collection('transactions')
       .where('companyId', '==', companyId)
-      .where('date', '>=', startDateStr)
       .get();
 
-    const transactions = snapshot.docs.map(doc => doc.data());
+    // Filtrer par date côté serveur
+    const transactions = snapshot.docs
+      .map(doc => doc.data())
+      .filter(t => t.date >= startDateStr);
 
     // Calculer les métriques
     const validatedTransactions = transactions.filter(t => t.status === 'validated');
@@ -64,6 +66,7 @@ router.get('/:companyId/metrics', async (req, res) => {
       period
     });
   } catch (error) {
+    console.error('Erreur GET analytics metrics:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -75,17 +78,21 @@ router.get('/:companyId/chart', async (req, res) => {
     const { companyId } = req.params;
     const { year = new Date().getFullYear() } = req.query;
 
+    // Requête simple pour éviter les index composites
     const snapshot = await db.collection('transactions')
       .where('companyId', '==', companyId)
-      .where('status', '==', 'validated')
       .get();
 
-    const transactions = snapshot.docs.map(doc => doc.data());
+    // Filtrer côté serveur
+    const transactions = snapshot.docs
+      .map(doc => doc.data())
+      .filter(t => t.status === 'validated');
 
     const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
 
     const chartData = months.map((month, index) => {
       const monthTransactions = transactions.filter(t => {
+        if (!t.date) return false;
         const date = new Date(t.date);
         return date.getMonth() === index && date.getFullYear() === parseInt(year);
       });
@@ -103,6 +110,7 @@ router.get('/:companyId/chart', async (req, res) => {
 
     res.json(chartData);
   } catch (error) {
+    console.error('Erreur GET analytics chart:', error);
     res.status(500).json({ error: error.message });
   }
 });

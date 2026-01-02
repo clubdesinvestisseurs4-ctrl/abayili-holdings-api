@@ -12,14 +12,23 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.get('/:companyId', async (req, res) => {
   try {
     const db = getDb();
+    // Requête simple sans orderBy pour éviter les index composites
     const snapshot = await db.collection('objectives')
       .where('companyId', '==', req.params.companyId)
-      .orderBy('createdAt', 'desc')
       .get();
     
-    const objectives = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    let objectives = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    // Tri côté serveur par date de création (plus récent en premier)
+    objectives.sort((a, b) => {
+      const dateA = a.createdAt?.toDate?.() || a.createdAt || 0;
+      const dateB = b.createdAt?.toDate?.() || b.createdAt || 0;
+      return dateB - dateA;
+    });
+
     res.json(objectives);
   } catch (error) {
+    console.error('Erreur GET objectives:', error);
     res.status(500).json({ error: error.message });
   }
 });
