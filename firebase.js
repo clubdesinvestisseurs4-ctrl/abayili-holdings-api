@@ -5,10 +5,13 @@
 
 const admin = require('firebase-admin');
 
-let db, auth, storage;
+let db = null;
+let auth = null;
+let storage = null;
+let initialized = false;
 
-async function initializeFirebase() {
-  if (admin.apps.length > 0) {
+function initializeFirebase() {
+  if (initialized && admin.apps.length > 0) {
     console.log('✅ Firebase déjà initialisé');
     return { db, auth, storage };
   }
@@ -50,12 +53,13 @@ async function initializeFirebase() {
       });
     }
     else {
-      throw new Error('Configuration Firebase manquante');
+      throw new Error('Configuration Firebase manquante. Définissez FIREBASE_SERVICE_ACCOUNT ou FIREBASE_PROJECT_ID.');
     }
 
     db = admin.firestore();
     auth = admin.auth();
     storage = admin.storage();
+    initialized = true;
 
     console.log('✅ Firebase initialisé avec succès');
     return { db, auth, storage };
@@ -65,11 +69,36 @@ async function initializeFirebase() {
   }
 }
 
-// Export avec getters pour accès lazy
+// Getters sécurisés qui vérifient l'initialisation
+function getDb() {
+  if (!initialized) {
+    throw new Error('Firebase non initialisé. Appelez initializeFirebase() d\'abord.');
+  }
+  return db;
+}
+
+function getAuth() {
+  if (!initialized) {
+    throw new Error('Firebase non initialisé. Appelez initializeFirebase() d\'abord.');
+  }
+  return auth;
+}
+
+function getStorage() {
+  if (!initialized) {
+    throw new Error('Firebase non initialisé. Appelez initializeFirebase() d\'abord.');
+  }
+  return storage;
+}
+
 module.exports = {
   initializeFirebase,
-  get db() { return db || admin.firestore(); },
-  get auth() { return auth || admin.auth(); },
-  get storage() { return storage || admin.storage(); },
-  admin
+  getDb,
+  getAuth,
+  getStorage,
+  admin,
+  // Getters pour compatibilité
+  get db() { return getDb(); },
+  get auth() { return getAuth(); },
+  get storage() { return getStorage(); }
 };

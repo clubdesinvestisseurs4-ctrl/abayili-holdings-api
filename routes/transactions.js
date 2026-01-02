@@ -4,11 +4,12 @@
 
 const express = require('express');
 const router = express.Router();
-const { db, admin } = require('../firebase');
+const { getDb, admin } = require('../firebase');
 
 // GET /api/transactions/:companyId - Liste des transactions
 router.get('/:companyId', async (req, res) => {
   try {
+    const db = getDb();
     const { companyId } = req.params;
     const { type, status, startDate, endDate } = req.query;
 
@@ -38,6 +39,7 @@ router.get('/:companyId', async (req, res) => {
 // POST /api/transactions - Créer une transaction
 router.post('/', async (req, res) => {
   try {
+    const db = getDb();
     const data = req.body;
     
     // Définir le statut selon le type et le rôle
@@ -76,6 +78,7 @@ router.put('/:id/status', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     const { id } = req.params;
     const { status } = req.body;
 
@@ -112,6 +115,7 @@ router.put('/:id/status', async (req, res) => {
 // DELETE /api/transactions/:id - Supprimer
 router.delete('/:id', async (req, res) => {
   try {
+    const db = getDb();
     await db.collection('transactions').doc(req.params.id).delete();
     res.json({ success: true });
   } catch (error) {
@@ -122,6 +126,7 @@ router.delete('/:id', async (req, res) => {
 // Helper: Mettre à jour le budget
 async function updateBudgetSpent(companyId, category, type, amount) {
   try {
+    const db = getDb();
     const budgetSnapshot = await db.collection('budgets')
       .where('companyId', '==', companyId)
       .where('name', '==', category)

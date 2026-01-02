@@ -4,11 +4,12 @@
 
 const express = require('express');
 const router = express.Router();
-const { db } = require('../firebase');
+const { getDb } = require('../firebase');
 
 // GET /api/analytics/:companyId/metrics - Métriques financières
 router.get('/:companyId/metrics', async (req, res) => {
   try {
+    const db = getDb();
     const { companyId } = req.params;
     const { period = 'month' } = req.query;
 
@@ -70,6 +71,7 @@ router.get('/:companyId/metrics', async (req, res) => {
 // GET /api/analytics/:companyId/chart - Données graphiques
 router.get('/:companyId/chart', async (req, res) => {
   try {
+    const db = getDb();
     const { companyId } = req.params;
     const { year = new Date().getFullYear() } = req.query;
 

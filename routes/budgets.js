@@ -4,11 +4,12 @@
 
 const express = require('express');
 const router = express.Router();
-const { db, admin } = require('../firebase');
+const { getDb, admin } = require('../firebase');
 
 // GET /api/budgets/:companyId - Liste des budgets
 router.get('/:companyId', async (req, res) => {
   try {
+    const db = getDb();
     const snapshot = await db.collection('budgets')
       .where('companyId', '==', req.params.companyId)
       .get();
@@ -23,6 +24,7 @@ router.get('/:companyId', async (req, res) => {
 // GET /api/budgets/:companyId/check - Vérifier alerte budget
 router.get('/:companyId/check', async (req, res) => {
   try {
+    const db = getDb();
     const { companyId } = req.params;
     const { category, type, amount } = req.query;
 
@@ -61,6 +63,7 @@ router.post('/', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     const budget = {
       ...req.body,
       spent: 0,
@@ -83,6 +86,7 @@ router.put('/:id', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     await db.collection('budgets').doc(req.params.id).update({
       ...req.body,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -101,6 +105,7 @@ router.delete('/:id', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     await db.collection('budgets').doc(req.params.id).delete();
     res.json({ success: true });
   } catch (error) {

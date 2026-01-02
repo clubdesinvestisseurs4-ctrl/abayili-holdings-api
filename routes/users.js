@@ -4,7 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { db, auth, admin } = require('../firebase');
+const { getDb, getAuth, admin } = require('../firebase');
 
 // GET /api/users - Liste des utilisateurs (admin uniquement)
 router.get('/', async (req, res) => {
@@ -13,6 +13,7 @@ router.get('/', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     const snapshot = await db.collection('users').get();
     const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     res.json(users);
@@ -28,6 +29,8 @@ router.post('/', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
+    const auth = getAuth();
     const { email, password, name, role, companies } = req.body;
 
     // Créer dans Firebase Auth
@@ -69,6 +72,8 @@ router.put('/:uid/role', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
+    const auth = getAuth();
     const { uid } = req.params;
     const { role, companies } = req.body;
 

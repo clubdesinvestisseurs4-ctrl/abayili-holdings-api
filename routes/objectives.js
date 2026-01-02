@@ -4,13 +4,14 @@
 
 const express = require('express');
 const router = express.Router();
-const { db, admin, storage } = require('../firebase');
+const { getDb, getStorage, admin } = require('../firebase');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
 // GET /api/objectives/:companyId - Liste des objectifs
 router.get('/:companyId', async (req, res) => {
   try {
+    const db = getDb();
     const snapshot = await db.collection('objectives')
       .where('companyId', '==', req.params.companyId)
       .orderBy('createdAt', 'desc')
@@ -30,6 +31,7 @@ router.post('/', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     const objective = {
       ...req.body,
       steps: [],
@@ -49,6 +51,7 @@ router.post('/', async (req, res) => {
 // PUT /api/objectives/:id - Modifier un objectif
 router.put('/:id', async (req, res) => {
   try {
+    const db = getDb();
     await db.collection('objectives').doc(req.params.id).update({
       ...req.body,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -67,6 +70,7 @@ router.post('/:id/steps', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     const objectiveRef = db.collection('objectives').doc(req.params.id);
     const objective = await objectiveRef.get();
 
@@ -98,6 +102,7 @@ router.post('/:id/steps', async (req, res) => {
 // PUT /api/objectives/:id/steps/:stepId/status - Modifier statut étape
 router.put('/:id/steps/:stepId/status', async (req, res) => {
   try {
+    const db = getDb();
     const { id, stepId } = req.params;
     const { status } = req.body;
 
@@ -131,6 +136,7 @@ router.put('/:id/steps/:stepId/status', async (req, res) => {
 // POST /api/objectives/:id/steps/:stepId/report - Soumettre compte-rendu
 router.post('/:id/steps/:stepId/report', upload.single('file'), async (req, res) => {
   try {
+    const db = getDb();
     const { id, stepId } = req.params;
     const { content, companyId } = req.body;
 
@@ -145,6 +151,7 @@ router.post('/:id/steps/:stepId/report', upload.single('file'), async (req, res)
 
     // Upload fichier si présent
     if (req.file) {
+      const storage = getStorage();
       const filename = `${companyId || 'general'}/reports/${Date.now()}_${req.file.originalname}`;
       const bucket = storage.bucket();
       const file = bucket.file(filename);
@@ -191,6 +198,7 @@ router.put('/:id/steps/:stepId/validate', async (req, res) => {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
     const { id, stepId } = req.params;
     const objectiveRef = db.collection('objectives').doc(id);
     const objective = await objectiveRef.get();
