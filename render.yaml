@@ -1,0 +1,23 @@
+# ========================================
+# RENDER.COM - Configuration de déploiement
+# ========================================
+# Ce fichier configure le déploiement automatique sur Render
+
+services:
+  - type: web
+    name: abayili-holdings-api
+    env: node
+    region: frankfurt  # ou paris si disponible
+    plan: free  # ou starter pour plus de ressources
+    branch: main
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        sync: false  # À configurer manuellement
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false  # À configurer manuellement (sensible)
