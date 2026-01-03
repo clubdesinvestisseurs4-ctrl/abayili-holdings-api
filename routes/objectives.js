@@ -1,28 +1,28 @@
 /**
- * Routes API - Objectives
+ * Routes API - Objectives & Steps
+ * Gestion des objectifs et étapes collaboratives
  */
 
 const express = require('express');
 const router = express.Router();
-const { getDb, getStorage, admin } = require('../firebase');
-const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() });
+const { getDb, admin } = require('../firebase');
+
+// ==================== OBJECTIFS ====================
 
 // GET /api/objectives/:companyId - Liste des objectifs
 router.get('/:companyId', async (req, res) => {
   try {
     const db = getDb();
-    // Requête simple sans orderBy pour éviter les index composites
     const snapshot = await db.collection('objectives')
       .where('companyId', '==', req.params.companyId)
       .get();
     
     let objectives = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     
-    // Tri côté serveur par date de création (plus récent en premier)
+    // Tri par date de création (plus récent en premier)
     objectives.sort((a, b) => {
-      const dateA = a.createdAt?.toDate?.() || a.createdAt || 0;
-      const dateB = b.createdAt?.toDate?.() || b.createdAt || 0;
+      const dateA = a.createdAt?.toDate?.() || new Date(a.createdAt) || 0;
+      const dateB = b.createdAt?.toDate?.() || new Date(b.createdAt) || 0;
       return dateB - dateA;
     });
 
@@ -33,19 +33,40 @@ router.get('/:companyId', async (req, res) => {
   }
 });
 
-// POST /api/objectives - Créer un objectif
+// GET /api/objectives/:companyId/:id - Détail d'un objectif
+router.get('/:companyId/:id', async (req, res) => {
+  try {
+    const db = getDb();
+    const doc = await db.collection('objectives').doc(req.params.id).get();
+    
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Objectif non trouvé' });
+    }
+    
+    res.json({ id: doc.id, ...doc.data() });
+  } catch (error) {
+    console.error('Erreur GET objective:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/objectives - Créer un objectif (admin/manager uniquement)
 router.post('/', async (req, res) => {
   try {
     if (!['admin_treasury', 'project_manager'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'Accès non autorisé' });
+      return res.status(403).json({ error: 'Seul le chef de projet peut créer des objectifs' });
     }
 
     const db = getDb();
     const objective = {
-      ...req.body,
+      title: req.body.title,
+      description: req.body.description || '',
+      deadline: req.body.deadline || null,
+      companyId: req.body.companyId,
+      status: 'todo',
       steps: [],
-      updates: [],
       createdBy: req.user.uid,
+      createdByName: req.user.name || req.user.email,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
@@ -53,32 +74,56 @@ router.post('/', async (req, res) => {
     const docRef = await db.collection('objectives').add(objective);
     res.status(201).json({ id: docRef.id, ...objective });
   } catch (error) {
+    console.error('Erreur POST objective:', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// PUT /api/objectives/:id - Modifier un objectif
+// PUT /api/objectives/:id - Modifier un objectif (admin/manager)
 router.put('/:id', async (req, res) => {
-  try {
-    const db = getDb();
-    await db.collection('objectives').doc(req.params.id).update({
-      ...req.body,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// POST /api/objectives/:id/steps - Ajouter une étape
-router.post('/:id/steps', async (req, res) => {
   try {
     if (!['admin_treasury', 'project_manager'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Accès non autorisé' });
     }
 
+    const db = getDb();
+    const { title, description, deadline, status } = req.body;
+    const updateData = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+    
+    if (title !== undefined) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (deadline !== undefined) updateData.deadline = deadline;
+    if (status !== undefined) updateData.status = status;
+
+    await db.collection('objectives').doc(req.params.id).update(updateData);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erreur PUT objective:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// DELETE /api/objectives/:id - Supprimer un objectif
+router.delete('/:id', async (req, res) => {
+  try {
+    if (!['admin_treasury', 'project_manager'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Accès non autorisé' });
+    }
+
+    const db = getDb();
+    await db.collection('objectives').doc(req.params.id).delete();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erreur DELETE objective:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ==================== ÉTAPES ====================
+
+// POST /api/objectives/:id/steps - Ajouter une étape (TOUS les utilisateurs)
+router.post('/:id/steps', async (req, res) => {
+  try {
     const db = getDb();
     const objectiveRef = db.collection('objectives').doc(req.params.id);
     const objective = await objectiveRef.get();
@@ -89,21 +134,65 @@ router.post('/:id/steps', async (req, res) => {
 
     const steps = objective.data().steps || [];
     const newStep = {
-      id: `step_${Date.now()}`,
-      ...req.body,
-      status: 'todo',
+      id: `step_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      title: req.body.title,
+      description: req.body.description || '',
+      status: 'todo', // todo, in_progress, waiting_validation, done
       order: steps.length + 1,
-      report: null,
-      createdAt: new Date().toISOString()
+      reports: [], // Historique des compte-rendus
+      createdBy: req.user.uid,
+      createdByName: req.user.name || req.user.email,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
 
+    steps.push(newStep);
+
     await objectiveRef.update({
-      steps: admin.firestore.FieldValue.arrayUnion(newStep),
+      steps,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
     res.status(201).json(newStep);
   } catch (error) {
+    console.error('Erreur POST step:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// PUT /api/objectives/:id/steps/:stepId - Modifier une étape
+router.put('/:id/steps/:stepId', async (req, res) => {
+  try {
+    const db = getDb();
+    const { id, stepId } = req.params;
+    const { title, description } = req.body;
+
+    const objectiveRef = db.collection('objectives').doc(id);
+    const objective = await objectiveRef.get();
+
+    if (!objective.exists) {
+      return res.status(404).json({ error: 'Objectif non trouvé' });
+    }
+
+    const steps = objective.data().steps || [];
+    const stepIndex = steps.findIndex(s => s.id === stepId);
+
+    if (stepIndex === -1) {
+      return res.status(404).json({ error: 'Étape non trouvée' });
+    }
+
+    if (title !== undefined) steps[stepIndex].title = title;
+    if (description !== undefined) steps[stepIndex].description = description;
+    steps[stepIndex].updatedAt = new Date().toISOString();
+
+    await objectiveRef.update({
+      steps,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json(steps[stepIndex]);
+  } catch (error) {
+    console.error('Erreur PUT step:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -114,6 +203,11 @@ router.put('/:id/steps/:stepId/status', async (req, res) => {
     const db = getDb();
     const { id, stepId } = req.params;
     const { status } = req.body;
+
+    const validStatuses = ['todo', 'in_progress', 'waiting_validation', 'done'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Statut invalide. Valeurs acceptées: todo, in_progress, waiting_validation, done' });
+    }
 
     const objectiveRef = db.collection('objectives').doc(id);
     const objective = await objectiveRef.get();
@@ -130,47 +224,44 @@ router.put('/:id/steps/:stepId/status', async (req, res) => {
     }
 
     steps[stepIndex].status = status;
+    steps[stepIndex].updatedAt = new Date().toISOString();
+    steps[stepIndex].statusUpdatedBy = req.user.uid;
+    steps[stepIndex].statusUpdatedByName = req.user.name || req.user.email;
+
+    // Calculer progression de l'objectif
+    const completedSteps = steps.filter(s => s.status === 'done').length;
+    const progress = steps.length > 0 ? Math.round((completedSteps / steps.length) * 100) : 0;
+    const objectiveStatus = progress === 100 ? 'completed' : (completedSteps > 0 || steps.some(s => s.status === 'in_progress')) ? 'in_progress' : 'todo';
 
     await objectiveRef.update({
       steps,
+      status: objectiveStatus,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    res.json(steps[stepIndex]);
+    res.json({ step: steps[stepIndex], progress, objectiveStatus });
   } catch (error) {
+    console.error('Erreur PUT step status:', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// POST /api/objectives/:id/steps/:stepId/report - Soumettre compte-rendu
-router.post('/:id/steps/:stepId/report', upload.single('file'), async (req, res) => {
+// POST /api/objectives/:id/steps/:stepId/report - Ajouter un compte-rendu
+router.post('/:id/steps/:stepId/report', async (req, res) => {
   try {
     const db = getDb();
     const { id, stepId } = req.params;
-    const { content, companyId } = req.body;
+    const { content, newStatus } = req.body;
+
+    if (!content || content.trim() === '') {
+      return res.status(400).json({ error: 'Le compte-rendu ne peut pas être vide' });
+    }
 
     const objectiveRef = db.collection('objectives').doc(id);
     const objective = await objectiveRef.get();
 
     if (!objective.exists) {
       return res.status(404).json({ error: 'Objectif non trouvé' });
-    }
-
-    let fileUrl = null;
-
-    // Upload fichier si présent
-    if (req.file) {
-      const storage = getStorage();
-      const filename = `${companyId || 'general'}/reports/${Date.now()}_${req.file.originalname}`;
-      const bucket = storage.bucket();
-      const file = bucket.file(filename);
-
-      await file.save(req.file.buffer, {
-        metadata: { contentType: req.file.mimetype }
-      });
-
-      await file.makePublic();
-      fileUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
     }
 
     const steps = objective.data().steps || [];
@@ -180,35 +271,54 @@ router.post('/:id/steps/:stepId/report', upload.single('file'), async (req, res)
       return res.status(404).json({ error: 'Étape non trouvée' });
     }
 
-    steps[stepIndex].report = {
-      content,
-      fileUrl,
-      fileName: req.file?.originalname || null,
-      submittedBy: req.user.uid,
-      date: new Date().toISOString()
+    // Créer le nouveau compte-rendu
+    const newReport = {
+      id: `report_${Date.now()}`,
+      content: content.trim(),
+      createdBy: req.user.uid,
+      createdByName: req.user.name || req.user.email,
+      createdAt: new Date().toISOString(),
+      statusAtTime: newStatus || steps[stepIndex].status
     };
-    steps[stepIndex].status = 'in_progress';
+
+    // Ajouter au tableau des compte-rendus
+    if (!steps[stepIndex].reports) {
+      steps[stepIndex].reports = [];
+    }
+    steps[stepIndex].reports.push(newReport);
+    steps[stepIndex].updatedAt = new Date().toISOString();
+
+    // Mettre à jour le statut si spécifié
+    if (newStatus && ['todo', 'in_progress', 'waiting_validation', 'done'].includes(newStatus)) {
+      steps[stepIndex].status = newStatus;
+      steps[stepIndex].statusUpdatedBy = req.user.uid;
+      steps[stepIndex].statusUpdatedByName = req.user.name || req.user.email;
+    }
+
+    // Calculer progression de l'objectif
+    const completedSteps = steps.filter(s => s.status === 'done').length;
+    const progress = steps.length > 0 ? Math.round((completedSteps / steps.length) * 100) : 0;
+    const objectiveStatus = progress === 100 ? 'completed' : (completedSteps > 0 || steps.some(s => s.status === 'in_progress')) ? 'in_progress' : 'todo';
 
     await objectiveRef.update({
       steps,
+      status: objectiveStatus,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    res.json(steps[stepIndex]);
+    res.json({ step: steps[stepIndex], report: newReport, progress, objectiveStatus });
   } catch (error) {
+    console.error('Erreur POST report:', error);
     res.status(400).json({ error: error.message });
   }
 });
 
-// PUT /api/objectives/:id/steps/:stepId/validate - Valider étape
-router.put('/:id/steps/:stepId/validate', async (req, res) => {
+// DELETE /api/objectives/:id/steps/:stepId - Supprimer une étape
+router.delete('/:id/steps/:stepId', async (req, res) => {
   try {
-    if (req.user.role !== 'project_manager') {
-      return res.status(403).json({ error: 'Accès non autorisé' });
-    }
-
     const db = getDb();
     const { id, stepId } = req.params;
+
     const objectiveRef = db.collection('objectives').doc(id);
     const objective = await objectiveRef.get();
 
@@ -216,32 +326,44 @@ router.put('/:id/steps/:stepId/validate', async (req, res) => {
       return res.status(404).json({ error: 'Objectif non trouvé' });
     }
 
-    const steps = objective.data().steps || [];
+    let steps = objective.data().steps || [];
     const stepIndex = steps.findIndex(s => s.id === stepId);
 
     if (stepIndex === -1) {
       return res.status(404).json({ error: 'Étape non trouvée' });
     }
 
-    steps[stepIndex].status = 'completed';
-    steps[stepIndex].validatedBy = req.user.uid;
-    steps[stepIndex].validatedAt = new Date().toISOString();
+    // Vérifier que l'utilisateur peut supprimer (créateur ou admin/manager)
+    const step = steps[stepIndex];
+    const canDelete = step.createdBy === req.user.uid || 
+                     ['admin_treasury', 'project_manager'].includes(req.user.role);
+
+    if (!canDelete) {
+      return res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres étapes' });
+    }
+
+    // Supprimer l'étape
+    steps = steps.filter(s => s.id !== stepId);
+
+    // Recalculer l'ordre
+    steps = steps.map((s, index) => ({ ...s, order: index + 1 }));
 
     // Calculer progression
-    const completedSteps = steps.filter(s => s.status === 'completed').length;
-    const progress = Math.round((completedSteps / steps.length) * 100);
-
-    // Mettre à jour le statut de l'objectif si terminé
-    const status = progress === 100 ? 'completed' : objective.data().status;
+    const completedSteps = steps.filter(s => s.status === 'done').length;
+    const progress = steps.length > 0 ? Math.round((completedSteps / steps.length) * 100) : 0;
+    const objectiveStatus = steps.length === 0 ? 'todo' : 
+                           progress === 100 ? 'completed' : 
+                           (completedSteps > 0 || steps.some(s => s.status === 'in_progress')) ? 'in_progress' : 'todo';
 
     await objectiveRef.update({
       steps,
-      status,
+      status: objectiveStatus,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    res.json({ step: steps[stepIndex], progress, status });
+    res.json({ success: true, progress, objectiveStatus });
   } catch (error) {
+    console.error('Erreur DELETE step:', error);
     res.status(400).json({ error: error.message });
   }
 });
