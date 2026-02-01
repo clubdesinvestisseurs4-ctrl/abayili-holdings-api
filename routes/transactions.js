@@ -1,17 +1,24 @@
 /**
  * Routes API - Transactions
+ * Avec support de navigation mensuelle
  */
 
 const express = require('express');
 const router = express.Router();
 const { getDb, admin } = require('../firebase');
 
+// Helper: Obtenir le mois courant au format YYYY-MM
+const getCurrentMonth = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
 // GET /api/transactions/:companyId - Liste des transactions
 router.get('/:companyId', async (req, res) => {
   try {
     const db = getDb();
     const { companyId } = req.params;
-    const { type, status, startDate, endDate } = req.query;
+    const { type, status, month, startDate, endDate } = req.query;
 
     // Requête simple sans orderBy pour éviter les index composites
     const snapshot = await db.collection('transactions')
@@ -27,14 +34,24 @@ router.get('/:companyId', async (req, res) => {
     if (status) {
       transactions = transactions.filter(t => t.status === status);
     }
-    if (startDate) {
-      transactions = transactions.filter(t => t.date >= startDate);
-    }
-    if (endDate) {
-      transactions = transactions.filter(t => t.date <= endDate);
+    
+    // Filtre par mois (YYYY-MM)
+    if (month) {
+      transactions = transactions.filter(t => {
+        if (!t.date) return false;
+        return t.date.startsWith(month);
+      });
+    } else {
+      // Filtres par dates si pas de mois spécifié
+      if (startDate) {
+        transactions = transactions.filter(t => t.date >= startDate);
+      }
+      if (endDate) {
+        transactions = transactions.filter(t => t.date <= endDate);
+      }
     }
 
-    // Tri côté serveur
+    // Tri côté serveur (plus récent en premier)
     transactions.sort((a, b) => {
       const dateA = a.date || '';
       const dateB = b.date || '';
@@ -47,6 +64,36 @@ router.get('/:companyId', async (req, res) => {
     res.json(transactions);
   } catch (error) {
     console.error('Erreur GET transactions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/transactions/:companyId/all-months - Liste de tous les mois avec transactions
+router.get('/:companyId/all-months', async (req, res) => {
+  try {
+    const db = getDb();
+    const { companyId } = req.params;
+    
+    const snapshot = await db.collection('transactions')
+      .where('companyId', '==', companyId)
+      .get();
+    
+    const months = new Set();
+    snapshot.docs.forEach(doc => {
+      const data = doc.data();
+      if (data.date) {
+        // Extraire YYYY-MM de la date
+        const month = data.date.substring(0, 7);
+        months.add(month);
+      }
+    });
+    
+    // Trier les mois (plus récent en premier)
+    const sortedMonths = Array.from(months).sort((a, b) => b.localeCompare(a));
+    
+    res.json(sortedMonths);
+  } catch (error) {
+    console.error('Erreur GET all-months transactions:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -77,7 +124,9 @@ router.post('/', async (req, res) => {
 
     // Mettre à jour le budget si validé
     if (status === 'validated') {
-      await updateBudgetSpent(data.companyId, data.category, data.type, data.amount);
+      // Extraire le mois de la date de la transaction
+      const month = data.date ? data.date.substring(0, 7) : getCurrentMonth();
+      await updateBudgetSpent(data.companyId, data.category, data.type, data.amount, month);
     }
 
     res.status(201).json({ id: docRef.id, ...transaction, status });
@@ -119,7 +168,8 @@ router.put('/:id/status', async (req, res) => {
     // Mettre à jour le budget si validé
     if (status === 'validated') {
       const data = transaction.data();
-      await updateBudgetSpent(data.companyId, data.category, data.type, data.amount);
+      const month = data.date ? data.date.substring(0, 7) : getCurrentMonth();
+      await updateBudgetSpent(data.companyId, data.category, data.type, data.amount, month);
     }
 
     res.json({ id, status });
@@ -141,20 +191,23 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Helper: Mettre à jour le budget
-async function updateBudgetSpent(companyId, category, type, amount) {
+// Helper: Mettre à jour le budget (avec support du mois)
+async function updateBudgetSpent(companyId, category, type, amount, month) {
   try {
     const db = getDb();
+    
+    // Chercher un budget correspondant
     const budgetSnapshot = await db.collection('budgets')
       .where('companyId', '==', companyId)
       .where('name', '==', category)
       .where('type', '==', type)
-      .limit(1)
       .get();
 
-    if (!budgetSnapshot.empty) {
-      const budgetDoc = budgetSnapshot.docs[0];
-      await budgetDoc.ref.update({
+    // Filtrer par mois côté serveur
+    const matchingBudget = budgetSnapshot.docs.find(doc => doc.data().month === month);
+
+    if (matchingBudget) {
+      await matchingBudget.ref.update({
         spent: admin.firestore.FieldValue.increment(amount)
       });
     }
