@@ -18,6 +18,32 @@ const formatMonth = (date) => {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 };
 
+// Helper: Extraire le mois d'un budget (depuis month ou createdAt)
+const getBudgetMonth = (budget) => {
+  // Si le budget a déjà un champ month, l'utiliser
+  if (budget.month) {
+    return budget.month;
+  }
+  
+  // Sinon, extraire le mois depuis createdAt
+  if (budget.createdAt) {
+    let date;
+    if (budget.createdAt._seconds) {
+      // Timestamp Firestore
+      date = new Date(budget.createdAt._seconds * 1000);
+    } else if (budget.createdAt.toDate) {
+      // Firestore Timestamp object
+      date = budget.createdAt.toDate();
+    } else {
+      date = new Date(budget.createdAt);
+    }
+    return formatMonth(date);
+  }
+  
+  // Par défaut, retourner le mois courant
+  return getCurrentMonth();
+};
+
 // GET /api/budgets/:companyId - Liste des budgets (filtré par mois)
 router.get('/:companyId', async (req, res) => {
   try {
@@ -33,8 +59,14 @@ router.get('/:companyId', async (req, res) => {
     
     let budgets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     
-    // Filtrer par mois
-    budgets = budgets.filter(b => b.month === targetMonth);
+    // Filtrer par mois (en utilisant getBudgetMonth pour les anciens budgets)
+    budgets = budgets.filter(b => getBudgetMonth(b) === targetMonth);
+    
+    // Ajouter le mois calculé aux budgets qui n'en ont pas
+    budgets = budgets.map(b => ({
+      ...b,
+      month: b.month || getBudgetMonth(b)
+    }));
     
     res.json(budgets);
   } catch (error) {
@@ -56,8 +88,10 @@ router.get('/:companyId/all-months', async (req, res) => {
     const months = new Set();
     snapshot.docs.forEach(doc => {
       const data = doc.data();
-      if (data.month) {
-        months.add(data.month);
+      // Utiliser getBudgetMonth pour inclure les anciens budgets
+      const budgetMonth = getBudgetMonth(data);
+      if (budgetMonth) {
+        months.add(budgetMonth);
       }
     });
     
@@ -87,8 +121,8 @@ router.get('/:companyId/check', async (req, res) => {
 
     const snapshot = await query.limit(10).get();
     
-    // Filtrer par mois côté serveur
-    const matchingBudget = snapshot.docs.find(doc => doc.data().month === targetMonth);
+    // Filtrer par mois côté serveur (utiliser getBudgetMonth pour les anciens budgets)
+    const matchingBudget = snapshot.docs.find(doc => getBudgetMonth(doc.data()) === targetMonth);
 
     if (!matchingBudget) {
       return res.json({ alert: null });
@@ -163,7 +197,7 @@ router.post('/:companyId/renew', async (req, res) => {
     
     const existingBudgets = existingSnapshot.docs
       .map(doc => doc.data())
-      .filter(b => b.month === targetMonth);
+      .filter(b => getBudgetMonth(b) === targetMonth);
     
     if (existingBudgets.length > 0) {
       return res.status(400).json({ 
@@ -175,7 +209,7 @@ router.post('/:companyId/renew', async (req, res) => {
     // Récupérer les budgets du mois source
     const sourceBudgets = existingSnapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
-      .filter(b => b.month === sourceMonth);
+      .filter(b => getBudgetMonth(b) === sourceMonth);
     
     if (sourceBudgets.length === 0) {
       return res.status(404).json({ error: 'Aucun budget trouvé pour le mois source' });
@@ -213,6 +247,50 @@ router.post('/:companyId/renew', async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur POST renew budgets:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// POST /api/budgets/migrate - Migrer les anciens budgets (ajouter champ month)
+router.post('/migrate', async (req, res) => {
+  try {
+    if (req.user.role !== 'admin_treasury') {
+      return res.status(403).json({ error: 'Accès non autorisé' });
+    }
+
+    const db = getDb();
+    
+    // Récupérer tous les budgets sans champ month
+    const snapshot = await db.collection('budgets').get();
+    
+    const budgetsToMigrate = snapshot.docs.filter(doc => !doc.data().month);
+    
+    if (budgetsToMigrate.length === 0) {
+      return res.json({ message: 'Aucun budget à migrer', count: 0 });
+    }
+    
+    const batch = db.batch();
+    let migratedCount = 0;
+    
+    for (const doc of budgetsToMigrate) {
+      const data = doc.data();
+      const budgetMonth = getBudgetMonth(data);
+      
+      batch.update(doc.ref, { 
+        month: budgetMonth,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      migratedCount++;
+    }
+    
+    await batch.commit();
+    
+    res.json({ 
+      message: `${migratedCount} budgets migrés avec succès`,
+      count: migratedCount
+    });
+  } catch (error) {
+    console.error('Erreur POST migrate budgets:', error);
     res.status(400).json({ error: error.message });
   }
 });

@@ -13,6 +13,32 @@ const getCurrentMonth = () => {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 };
 
+// Helper: Formater une date en YYYY-MM
+const formatMonth = (date) => {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+};
+
+// Helper: Extraire le mois d'un budget (depuis month ou createdAt)
+const getBudgetMonth = (budget) => {
+  if (budget.month) {
+    return budget.month;
+  }
+  
+  if (budget.createdAt) {
+    let date;
+    if (budget.createdAt._seconds) {
+      date = new Date(budget.createdAt._seconds * 1000);
+    } else if (budget.createdAt.toDate) {
+      date = budget.createdAt.toDate();
+    } else {
+      date = new Date(budget.createdAt);
+    }
+    return formatMonth(date);
+  }
+  
+  return getCurrentMonth();
+};
+
 // GET /api/transactions/:companyId - Liste des transactions
 router.get('/:companyId', async (req, res) => {
   try {
@@ -203,8 +229,8 @@ async function updateBudgetSpent(companyId, category, type, amount, month) {
       .where('type', '==', type)
       .get();
 
-    // Filtrer par mois côté serveur
-    const matchingBudget = budgetSnapshot.docs.find(doc => doc.data().month === month);
+    // Filtrer par mois côté serveur (utiliser getBudgetMonth pour les anciens budgets)
+    const matchingBudget = budgetSnapshot.docs.find(doc => getBudgetMonth(doc.data()) === month);
 
     if (matchingBudget) {
       await matchingBudget.ref.update({
