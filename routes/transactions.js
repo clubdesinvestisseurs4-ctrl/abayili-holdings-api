@@ -282,7 +282,5 @@ async function updateBudgetSpent(companyId, category, type, amount, month) {
     console.error('[updateBudgetSpent] Erreur:', error);
   }
 }
-    console.error('Erreur mise à jour budget:', error);
- 
 
 module.exports = router;
