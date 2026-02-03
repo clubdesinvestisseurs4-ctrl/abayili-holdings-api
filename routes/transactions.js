@@ -209,11 +209,87 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
+// PUT /api/transactions/:id - Modifier une transaction
+router.put('/:id', async (req, res) => {
+  try {
+    if (req.user.role !== 'admin_treasury') {
+      return res.status(403).json({ error: 'Accès non autorisé' });
+    }
+
+    const db = getDb();
+    const { id } = req.params;
+    const { type, category, amount, description, date } = req.body;
+
+    const transactionRef = db.collection('transactions').doc(id);
+    const transaction = await transactionRef.get();
+
+    if (!transaction.exists) {
+      return res.status(404).json({ error: 'Transaction non trouvée' });
+    }
+
+    const oldData = transaction.data();
+    const updateData = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Mettre à jour les champs fournis
+    if (type !== undefined) updateData.type = type;
+    if (category !== undefined) updateData.category = category;
+    if (amount !== undefined) updateData.amount = parseFloat(amount);
+    if (description !== undefined) updateData.description = description;
+    if (date !== undefined) updateData.date = date;
+
+    await transactionRef.update(updateData);
+
+    // Si la transaction était validée et que le montant/catégorie a changé, 
+    // on doit ajuster les budgets (soustraire l'ancien, ajouter le nouveau)
+    if (oldData.status === 'validated') {
+      const oldMonth = oldData.date ? oldData.date.substring(0, 7) : getCurrentMonth();
+      const newMonth = (date || oldData.date).substring(0, 7);
+      
+      // Soustraire l'ancien montant du budget
+      await updateBudgetSpent(oldData.companyId, oldData.category, oldData.type, -(oldData.amount || 0), oldMonth);
+      
+      // Ajouter le nouveau montant au budget
+      const newCategory = category || oldData.category;
+      const newType = type || oldData.type;
+      const newAmount = amount !== undefined ? parseFloat(amount) : oldData.amount;
+      await updateBudgetSpent(oldData.companyId, newCategory, newType, newAmount, newMonth);
+    }
+
+    console.log(`[PUT transaction] Transaction ${id} modifiée`);
+    res.json({ id, success: true });
+  } catch (error) {
+    console.error('Erreur PUT transaction:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // DELETE /api/transactions/:id - Supprimer
 router.delete('/:id', async (req, res) => {
   try {
     const db = getDb();
-    await db.collection('transactions').doc(req.params.id).delete();
+    const { id } = req.params;
+    
+    const transactionRef = db.collection('transactions').doc(id);
+    const transaction = await transactionRef.get();
+    
+    if (!transaction.exists) {
+      return res.status(404).json({ error: 'Transaction non trouvée' });
+    }
+    
+    const data = transaction.data();
+    
+    // Si la transaction était validée, soustraire du budget
+    if (data.status === 'validated' && data.amount) {
+      const month = data.date ? data.date.substring(0, 7) : getCurrentMonth();
+      await updateBudgetSpent(data.companyId, data.category, data.type, -(data.amount), month);
+      console.log(`[DELETE transaction] Budget ajusté: -${data.amount} pour ${data.category}`);
+    }
+    
+    await transactionRef.delete();
+    console.log(`[DELETE transaction] Transaction ${id} supprimée`);
+    
     res.json({ success: true });
   } catch (error) {
     console.error('Erreur DELETE transaction:', error);
