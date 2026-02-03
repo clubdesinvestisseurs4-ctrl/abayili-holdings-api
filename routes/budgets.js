@@ -186,6 +186,8 @@ router.post('/:companyId/renew', async (req, res) => {
     const { companyId } = req.params;
     const { sourceMonth, targetMonth } = req.body;
     
+    console.log(`[RENEW] Renouvellement budgets: companyId=${companyId}, source=${sourceMonth}, target=${targetMonth}`);
+    
     if (!sourceMonth || !targetMonth) {
       return res.status(400).json({ error: 'sourceMonth et targetMonth sont requis' });
     }
@@ -211,6 +213,9 @@ router.post('/:companyId/renew', async (req, res) => {
       .map(doc => ({ id: doc.id, ...doc.data() }))
       .filter(b => getBudgetMonth(b) === sourceMonth);
     
+    console.log(`[RENEW] Budgets source trouvés: ${sourceBudgets.length}`);
+    sourceBudgets.forEach(b => console.log(`[RENEW] - ${b.name} (${b.type}): ${b.amount}`));
+    
     if (sourceBudgets.length === 0) {
       return res.status(404).json({ error: 'Aucun budget trouvé pour le mois source' });
     }
@@ -235,11 +240,14 @@ router.post('/:companyId/renew', async (req, res) => {
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
       
+      console.log(`[RENEW] Création budget: ${newBudget.name} pour ${targetMonth}`);
+      
       batch.set(newBudgetRef, newBudget);
       newBudgets.push({ id: newBudgetRef.id, ...newBudget });
     }
     
     await batch.commit();
+    console.log(`[RENEW] ${newBudgets.length} budgets créés avec succès`);
     
     res.status(201).json({ 
       message: `${newBudgets.length} budgets renouvelés pour ${targetMonth}`,

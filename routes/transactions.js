@@ -130,6 +130,8 @@ router.post('/', async (req, res) => {
     const db = getDb();
     const data = req.body;
     
+    console.log('[POST transaction] Données reçues:', JSON.stringify(data, null, 2));
+    
     // Définir le statut selon le type et le rôle
     let status = 'pending';
     if (data.type === 'revenue') {
@@ -147,11 +149,13 @@ router.post('/', async (req, res) => {
     };
 
     const docRef = await db.collection('transactions').add(transaction);
+    console.log('[POST transaction] Transaction créée:', docRef.id, 'status:', status);
 
     // Mettre à jour le budget si validé
     if (status === 'validated') {
       // Extraire le mois de la date de la transaction
       const month = data.date ? data.date.substring(0, 7) : getCurrentMonth();
+      console.log('[POST transaction] Mise à jour budget pour mois:', month);
       await updateBudgetSpent(data.companyId, data.category, data.type, data.amount, month);
     }
 
@@ -222,22 +226,62 @@ async function updateBudgetSpent(companyId, category, type, amount, month) {
   try {
     const db = getDb();
     
-    // Chercher un budget correspondant
+    console.log(`[updateBudgetSpent] Recherche budget: companyId=${companyId}, category=${category}, type=${type}, month=${month}`);
+    
+    // Chercher tous les budgets de cette entreprise et de ce type
     const budgetSnapshot = await db.collection('budgets')
       .where('companyId', '==', companyId)
-      .where('name', '==', category)
       .where('type', '==', type)
       .get();
 
-    // Filtrer par mois côté serveur (utiliser getBudgetMonth pour les anciens budgets)
-    const matchingBudget = budgetSnapshot.docs.find(doc => getBudgetMonth(doc.data()) === month);
+    console.log(`[updateBudgetSpent] Budgets trouvés pour type ${type}: ${budgetSnapshot.docs.length}`);
+    
+    // Lister tous les budgets trouvés pour debug
+    budgetSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      console.log(`[updateBudgetSpent] Budget: id=${doc.id}, name=${data.name}, month=${data.month || getBudgetMonth(data)}`);
+    });
+
+    // Filtrer par mois ET par catégorie (avec correspondance flexible)
+    const categoryLower = category ? category.toLowerCase().trim() : '';
+    
+    const matchingBudget = budgetSnapshot.docs.find(doc => {
+      const data = doc.data();
+      const budgetMonth = data.month || getBudgetMonth(data);
+      
+      // Vérifier le mois
+      if (budgetMonth !== month) {
+        return false;
+      }
+      
+      // Correspondance flexible de la catégorie (insensible à la casse)
+      const budgetNameLower = data.name ? data.name.toLowerCase().trim() : '';
+      
+      // Vérifier correspondance exacte ou partielle
+      const isMatch = budgetNameLower === categoryLower || 
+                      budgetNameLower.includes(categoryLower) || 
+                      categoryLower.includes(budgetNameLower);
+      
+      if (isMatch) {
+        console.log(`[updateBudgetSpent] Correspondance trouvée: "${data.name}" ↔ "${category}"`);
+      }
+      
+      return isMatch;
+    });
 
     if (matchingBudget) {
+      console.log(`[updateBudgetSpent] Budget correspondant: ${matchingBudget.id}, mise à jour spent +${amount}`);
       await matchingBudget.ref.update({
         spent: admin.firestore.FieldValue.increment(amount)
       });
+      console.log(`[updateBudgetSpent] Budget mis à jour avec succès`);
+    } else {
+      console.log(`[updateBudgetSpent] ⚠️ Aucun budget correspondant trouvé pour catégorie="${category}" et mois=${month}`);
     }
   } catch (error) {
+    console.error('[updateBudgetSpent] Erreur:', error);
+  }
+}
     console.error('Erreur mise à jour budget:', error);
   }
 }
