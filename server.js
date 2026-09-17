@@ -81,7 +81,11 @@ const authMiddleware = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Auth error:', error.message);
-    res.status(401).json({ error: 'Token invalide' });
+    // TEMPORAIRE (diagnostic) : renvoie le vrai message/code Firebase Admin
+    // au lieu du générique "Token invalide", pour identifier la cause exacte
+    // (jeton expiré, mauvais projet, signature invalide, etc.) sans accès
+    // aux logs Render. À remettre en générique une fois la cause confirmée.
+    res.status(401).json({ error: 'Token invalide', detail: error.message, code: error.code });
   }
 };
 
