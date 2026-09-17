@@ -138,6 +138,7 @@ const startServer = async () => {
     const objectiveRoutes = require('./routes/objectives');
     const userRoutes = require('./routes/users');
     const analyticsRoutes = require('./routes/analytics');
+    const pionexRoutes = require('./routes/pionex');
 
     // Routes API
     app.use('/api/transactions', authMiddleware, transactionRoutes);
@@ -145,6 +146,7 @@ const startServer = async () => {
     app.use('/api/objectives', authMiddleware, objectiveRoutes);
     app.use('/api/users', authMiddleware, userRoutes);
     app.use('/api/analytics', authMiddleware, analyticsRoutes);
+    app.use('/api/pionex', authMiddleware, pionexRoutes);
 
     // Upload de fichiers
     app.post('/api/upload/report', authMiddleware, requireRole('admin_treasury'), upload.single('file'), async (req, res) => {
