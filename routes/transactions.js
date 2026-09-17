@@ -40,41 +40,71 @@ const getBudgetMonth = (budget) => {
 };
 
 // GET /api/transactions/:companyId - Liste des transactions
+//
+// Optimisation 2026-09-17 : l'ancienne version lisait TOUJOURS l'intégralité
+// de l'historique d'une entité (`.where('companyId','==',companyId).get()`)
+// puis filtrait par mois/date en mémoire - donc consulter un seul mois sur
+// une entité qui a 175 transactions coûtait 175 lectures Firestore, à chaque
+// chargement de page. C'est ce qui a vidé le quota gratuit quotidien en une
+// journée. Le cas le plus fréquent (mois précis, ou plage de dates) filtre
+// maintenant au niveau Firestore (index composite companyId+date requis,
+// voir docs/firestore-indexes ou la console Firebase) - ne lit que les
+// documents du mois demandé. Le cas "tout l'historique" (aucun filtre,
+// utilisé par Total Global / Portefeuille Global) reste un scan complet :
+// inévitable pour ce besoin sans maintenir des compteurs agrégés séparés.
 router.get('/:companyId', async (req, res) => {
   try {
     const db = getDb();
     const { companyId } = req.params;
     const { type, status, month, startDate, endDate } = req.query;
 
-    // Requête simple sans orderBy pour éviter les index composites
-    const snapshot = await db.collection('transactions')
-      .where('companyId', '==', companyId)
-      .get();
-    
-    let transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    let query = db.collection('transactions').where('companyId', '==', companyId);
+    let usedIndexedRange = false;
 
-    // Filtres côté serveur
+    if (month) {
+      // Bornes de date en string (format YYYY-MM-DD, comparable lexicalement)
+      const [y, m] = month.split('-').map(Number);
+      const startStr = `${month}-01`;
+      const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+      const endStr = `${nextMonth}-01`;
+      query = query.where('date', '>=', startStr).where('date', '<', endStr);
+      usedIndexedRange = true;
+    } else if (startDate || endDate) {
+      if (startDate) query = query.where('date', '>=', startDate);
+      if (endDate) query = query.where('date', '<=', endDate);
+      usedIndexedRange = true;
+    }
+
+    let transactions;
+    try {
+      const snapshot = await query.get();
+      transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (queryError) {
+      // Repli automatique si l'index composite n'existe pas encore (Firestore
+      // renvoie FAILED_PRECONDITION avec un lien pour le créer) - au moins la
+      // page continue de fonctionner (comme avant) pendant que l'index se
+      // construit, au prix du coût en lecture qu'on cherche justement à éviter.
+      if (usedIndexedRange && queryError.code === 9 /* FAILED_PRECONDITION */) {
+        console.warn('Index composite manquant pour transactions(companyId,date), repli sur lecture complète + filtre mémoire:', queryError.message);
+        const snapshot = await db.collection('transactions').where('companyId', '==', companyId).get();
+        transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        if (month) {
+          transactions = transactions.filter(t => t.date && t.date.startsWith(month));
+        } else {
+          if (startDate) transactions = transactions.filter(t => t.date >= startDate);
+          if (endDate) transactions = transactions.filter(t => t.date <= endDate);
+        }
+      } else {
+        throw queryError;
+      }
+    }
+
+    // Filtres additionnels (rarement combinés avec month/dates, faible volume)
     if (type) {
       transactions = transactions.filter(t => t.type === type);
     }
     if (status) {
       transactions = transactions.filter(t => t.status === status);
-    }
-    
-    // Filtre par mois (YYYY-MM)
-    if (month) {
-      transactions = transactions.filter(t => {
-        if (!t.date) return false;
-        return t.date.startsWith(month);
-      });
-    } else {
-      // Filtres par dates si pas de mois spécifié
-      if (startDate) {
-        transactions = transactions.filter(t => t.date >= startDate);
-      }
-      if (endDate) {
-        transactions = transactions.filter(t => t.date <= endDate);
-      }
     }
 
     // Tri côté serveur (plus récent en premier)
@@ -84,13 +114,10 @@ router.get('/:companyId', async (req, res) => {
       return dateB.localeCompare(dateA);
     });
 
-    // Limite de sécurité : généreuse pour une requête filtrée par mois (déjà
-    // naturellement petite), beaucoup plus haute pour une requête "historique
-    // complet" (sans filtre de mois, utilisée par le Total Global et le
-    // Portefeuille Global) - un plafond bas ici coupait silencieusement les
-    // transactions les plus anciennes (ex: années précédentes) dès qu'une
-    // entité dépassait 100 transactions au total.
-    transactions = transactions.slice(0, month ? 500 : 5000);
+    // Limite de sécurité : généreuse pour une requête filtrée (déjà petite),
+    // beaucoup plus haute pour une requête "historique complet" (Total
+    // Global / Portefeuille Global).
+    transactions = transactions.slice(0, usedIndexedRange ? 500 : 5000);
 
     res.json(transactions);
   } catch (error) {
