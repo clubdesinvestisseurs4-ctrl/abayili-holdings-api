@@ -186,4 +186,22 @@ router.get('/:companyId/monthly-summary', async (req, res) => {
   }
 });
 
+// GET /api/analytics/:companyId/reference - Chiffre de trésorerie de référence
+// (lu directement dans les fichiers Excel/Drive de l'utilisateur, indépendamment
+// des transactions saisies dans l'app) - sert à réconcilier : comparer ce que
+// l'app calcule depuis ses propres transactions avec la source externe.
+// Alimenté manuellement (voir data/paper_trading-style : pas de sync auto pour
+// l'instant), collection 'portfolio_references', un document par companyId.
+router.get('/:companyId/reference', async (req, res) => {
+  try {
+    const db = getDb();
+    const { companyId } = req.params;
+    const doc = await db.collection('portfolio_references').doc(companyId).get();
+    res.json(doc.exists ? doc.data() : null);
+  } catch (error) {
+    console.error('Erreur GET analytics reference:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
