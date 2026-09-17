@@ -84,8 +84,13 @@ router.get('/:companyId', async (req, res) => {
       return dateB.localeCompare(dateA);
     });
 
-    // Limiter à 100 résultats
-    transactions = transactions.slice(0, 100);
+    // Limite de sécurité : généreuse pour une requête filtrée par mois (déjà
+    // naturellement petite), beaucoup plus haute pour une requête "historique
+    // complet" (sans filtre de mois, utilisée par le Total Global et le
+    // Portefeuille Global) - un plafond bas ici coupait silencieusement les
+    // transactions les plus anciennes (ex: années précédentes) dès qu'une
+    // entité dépassait 100 transactions au total.
+    transactions = transactions.slice(0, month ? 500 : 5000);
 
     res.json(transactions);
   } catch (error) {
