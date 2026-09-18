@@ -20,6 +20,7 @@ const router = express.Router();
 // (constaté le 2026-09-18) - publicnode.com s'est montré fiable en test,
 // avec un repli sur un deuxième noeud public si le premier échoue.
 const ETH_RPC_URLS = ['https://ethereum-rpc.publicnode.com', 'https://cloudflare-eth.com'];
+const USD_TO_FCFA = 600;
 
 async function getEthBalanceWei(address) {
   let lastError;
