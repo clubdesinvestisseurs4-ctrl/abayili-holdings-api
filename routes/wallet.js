@@ -16,18 +16,28 @@
 const express = require('express');
 const router = express.Router();
 
-const ETH_RPC_URL = 'https://cloudflare-eth.com';
-const USD_TO_FCFA = 600;
+// cloudflare-eth.com renvoyait une erreur interne pour cette adresse
+// (constaté le 2026-09-18) - publicnode.com s'est montré fiable en test,
+// avec un repli sur un deuxième noeud public si le premier échoue.
+const ETH_RPC_URLS = ['https://ethereum-rpc.publicnode.com', 'https://cloudflare-eth.com'];
 
 async function getEthBalanceWei(address) {
-  const res = await fetch(ETH_RPC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_getBalance', params: [address, 'latest'], id: 1 }),
-  });
-  const body = await res.json();
-  if (body.error) throw new Error(`RPC Ethereum: ${body.error.message}`);
-  return BigInt(body.result);
+  let lastError;
+  for (const url of ETH_RPC_URLS) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_getBalance', params: [address, 'latest'], id: 1 }),
+      });
+      const body = await res.json();
+      if (body.error) throw new Error(body.error.message);
+      return BigInt(body.result);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error(`RPC Ethereum: ${lastError?.message || 'tous les noeuds ont échoué'}`);
 }
 
 async function getEthPriceUsd() {
