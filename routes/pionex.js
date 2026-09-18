@@ -16,8 +16,88 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const { getDb, admin } = require('../firebase');
 
 const PIONEX_BASE_URL = 'https://api.pionex.com';
+
+// --- Synchronisation automatique vers le grand livre (transactions) ---
+//
+// Le bot Pionex encaisse du profit réalisé (gridProfit) en continu, mais
+// jusqu'ici il fallait le relever à la main sur l'app Pionex et le saisir
+// dans l'Excel avant import. Ici on transforme la VARIATION du profit
+// réalisé depuis le dernier relevé en une transaction automatique.
+//
+// Choix volontaire : on synchronise gridProfit (profit RÉALISÉ, encaissé
+// par le bot à chaque paire d'ordres bouclée), pas currentProfit (qui
+// inclut la part flottante liée au prix du BTC et peut remonter/redescendre
+// sans raison comptable - l'enregistrer créerait des transactions qui se
+// contrediraient d'un relevé à l'autre). currentProfit reste visible en
+// direct sur le widget, mais ne génère jamais de transaction.
+//
+// Déclenchement : pas de vrai cron (le service Render gratuit s'endort),
+// on vérifie plutôt à chaque appel de /grid-bot/status si au moins
+// SYNC_MIN_INTERVAL_MS se sont écoulés depuis le dernier relevé - donc ça
+// se déclenche naturellement dès qu'une page consultant le widget réveille
+// le serveur, avec un espacement mini de 2 jours entre deux transactions.
+const SYNC_MIN_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000; // 2 jours
+const USD_TO_FCFA = 600; // même taux fixe que les données déjà importées
+const SYNC_STATE_DOC = 'grid_bot_trading_compte1';
+const SYNC_COMPANY_ID = 'abayili_invest_rc_trading';
+const SYNC_EPSILON_USD = 0.01; // ignore le bruit flottant sous 1 centime
+
+async function syncGridProfitToLedger(gridProfit) {
+  const db = getDb();
+  const stateRef = db.collection('pionex_sync_state').doc(SYNC_STATE_DOC);
+  const stateDoc = await stateRef.get();
+  const state = stateDoc.exists ? stateDoc.data() : null;
+
+  const now = Date.now();
+  const lastSyncedAt = state?.lastSyncedAt?._seconds ? state.lastSyncedAt._seconds * 1000 : 0;
+
+  if (state && now - lastSyncedAt < SYNC_MIN_INTERVAL_MS) {
+    return { synced: false, reason: 'trop tôt depuis le dernier relevé', nextSyncAt: new Date(lastSyncedAt + SYNC_MIN_INTERVAL_MS).toISOString() };
+  }
+
+  // Premier relevé jamais fait : on initialise la référence sans créer de
+  // transaction (on ne connaît pas le profit réalisé avant le début du
+  // suivi automatique - il est déjà couvert par les imports manuels passés).
+  if (!state) {
+    await stateRef.set({
+      lastGridProfit: gridProfit,
+      lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return { synced: false, reason: 'premier relevé, référence initialisée' };
+  }
+
+  const delta = gridProfit - state.lastGridProfit;
+  if (Math.abs(delta) < SYNC_EPSILON_USD) {
+    await stateRef.update({ lastSyncedAt: admin.firestore.FieldValue.serverTimestamp() });
+    return { synced: false, reason: 'aucune variation significative' };
+  }
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const transaction = {
+    companyId: SYNC_COMPANY_ID,
+    type: delta >= 0 ? 'revenue' : 'expense',
+    category: delta >= 0 ? 'Produits Financiers' : 'Charges Financières',
+    amount: Math.round(Math.abs(delta) * USD_TO_FCFA),
+    description: `[Sync auto Pionex] Variation du profit réalisé de la grille (${delta >= 0 ? '+' : ''}${delta.toFixed(2)} USDT)`,
+    date: todayStr,
+    status: delta >= 0 ? 'validated' : 'pending',
+    createdBy: 'pionex-auto-sync',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  const docRef = await db.collection('transactions').add(transaction);
+
+  await stateRef.update({
+    lastGridProfit: gridProfit,
+    lastSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { synced: true, transactionId: docRef.id, deltaUsd: delta, amountFcfa: transaction.amount };
+}
 
 function sign(method, path, params, secret) {
   const sortedKeys = Object.keys(params).sort();
@@ -101,6 +181,16 @@ router.get('/grid-bot/status', async (req, res) => {
     };
 
     cache = { data: payload, expiresAt: Date.now() + CACHE_TTL_MS };
+
+    // Synchro auto (best-effort) : ne doit jamais faire échouer l'affichage
+    // du widget si elle rate (index manquant, Firestore indisponible, etc.).
+    try {
+      payload.autoSync = await syncGridProfitToLedger(payload.gridProfit);
+    } catch (syncError) {
+      console.error('Erreur sync auto Pionex -> transactions:', syncError.message);
+      payload.autoSync = { synced: false, reason: 'erreur technique', detail: syncError.message };
+    }
+
     res.json(payload);
   } catch (error) {
     console.error('Erreur GET pionex grid-bot status:', error.message);
