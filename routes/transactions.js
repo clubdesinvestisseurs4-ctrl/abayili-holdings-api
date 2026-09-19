@@ -39,6 +39,21 @@ const getBudgetMonth = (budget) => {
   return getCurrentMonth();
 };
 
+// Cache mémoire court pour la lecture "historique complet" (aucun filtre de
+// mois/date) - optimisation 2026-09-19 : plusieurs widgets sur une même
+// page (Rendement, Évolution, Relevés manuels, Portefeuille Global...)
+// appellent chacun TransactionAPI.getAll(companyId) sans filtre en
+// parallèle. Sans ce cache, chacun déclenchait son propre scan complet
+// Firestore - sur une entité à 175+ transactions consultée par 3-4 widgets
+// à la fois, ça remultiplie vite le coût qui avait déjà vidé le quota
+// gratuit une fois. Invalidé explicitement à chaque écriture (POST/PUT/
+// DELETE) sur l'entité concernée, en plus du TTL court.
+const fullHistoryCache = new Map(); // companyId -> { data, expiresAt }
+const FULL_HISTORY_CACHE_TTL_MS = 45_000;
+function invalidateFullHistoryCache(companyId) {
+  if (companyId) fullHistoryCache.delete(companyId);
+}
+
 // GET /api/transactions/:companyId - Liste des transactions
 //
 // Optimisation 2026-09-17 : l'ancienne version lisait TOUJOURS l'intégralité
@@ -50,54 +65,67 @@ const getBudgetMonth = (budget) => {
 // maintenant au niveau Firestore (index composite companyId+date requis,
 // voir docs/firestore-indexes ou la console Firebase) - ne lit que les
 // documents du mois demandé. Le cas "tout l'historique" (aucun filtre,
-// utilisé par Total Global / Portefeuille Global) reste un scan complet :
-// inévitable pour ce besoin sans maintenir des compteurs agrégés séparés.
+// utilisé par Total Global / Portefeuille Global / les widgets Rendement,
+// Évolution, Relevés manuels) reste un scan complet mais passe maintenant
+// par le cache court ci-dessus (voir 2026-09-19).
 router.get('/:companyId', async (req, res) => {
   try {
     const db = getDb();
     const { companyId } = req.params;
     const { type, status, month, startDate, endDate } = req.query;
-
-    let query = db.collection('transactions').where('companyId', '==', companyId);
-    let usedIndexedRange = false;
-
-    if (month) {
-      // Bornes de date en string (format YYYY-MM-DD, comparable lexicalement)
-      const [y, m] = month.split('-').map(Number);
-      const startStr = `${month}-01`;
-      const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
-      const endStr = `${nextMonth}-01`;
-      query = query.where('date', '>=', startStr).where('date', '<', endStr);
-      usedIndexedRange = true;
-    } else if (startDate || endDate) {
-      if (startDate) query = query.where('date', '>=', startDate);
-      if (endDate) query = query.where('date', '<=', endDate);
-      usedIndexedRange = true;
-    }
+    const isFullHistory = !month && !startDate && !endDate;
 
     let transactions;
-    try {
-      const snapshot = await query.get();
-      transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (queryError) {
-      // Repli automatique si l'index composite n'existe pas encore (Firestore
-      // renvoie FAILED_PRECONDITION avec un lien pour le créer) - au moins la
-      // page continue de fonctionner (comme avant) pendant que l'index se
-      // construit, au prix du coût en lecture qu'on cherche justement à éviter.
-      if (usedIndexedRange && queryError.code === 9 /* FAILED_PRECONDITION */) {
-        console.warn('Index composite manquant pour transactions(companyId,date), repli sur lecture complète + filtre mémoire:', queryError.message);
-        const snapshot = await db.collection('transactions').where('companyId', '==', companyId).get();
+
+    if (isFullHistory && fullHistoryCache.has(companyId) && Date.now() < fullHistoryCache.get(companyId).expiresAt) {
+      transactions = fullHistoryCache.get(companyId).data;
+    } else {
+      let query = db.collection('transactions').where('companyId', '==', companyId);
+      let usedIndexedRange = false;
+
+      if (month) {
+        // Bornes de date en string (format YYYY-MM-DD, comparable lexicalement)
+        const [y, m] = month.split('-').map(Number);
+        const startStr = `${month}-01`;
+        const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+        const endStr = `${nextMonth}-01`;
+        query = query.where('date', '>=', startStr).where('date', '<', endStr);
+        usedIndexedRange = true;
+      } else if (startDate || endDate) {
+        if (startDate) query = query.where('date', '>=', startDate);
+        if (endDate) query = query.where('date', '<=', endDate);
+        usedIndexedRange = true;
+      }
+
+      try {
+        const snapshot = await query.get();
         transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        if (month) {
-          transactions = transactions.filter(t => t.date && t.date.startsWith(month));
+      } catch (queryError) {
+        // Repli automatique si l'index composite n'existe pas encore (Firestore
+        // renvoie FAILED_PRECONDITION avec un lien pour le créer) - au moins la
+        // page continue de fonctionner (comme avant) pendant que l'index se
+        // construit, au prix du coût en lecture qu'on cherche justement à éviter.
+        if (usedIndexedRange && queryError.code === 9 /* FAILED_PRECONDITION */) {
+          console.warn('Index composite manquant pour transactions(companyId,date), repli sur lecture complète + filtre mémoire:', queryError.message);
+          const snapshot = await db.collection('transactions').where('companyId', '==', companyId).get();
+          transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          if (month) {
+            transactions = transactions.filter(t => t.date && t.date.startsWith(month));
+          } else {
+            if (startDate) transactions = transactions.filter(t => t.date >= startDate);
+            if (endDate) transactions = transactions.filter(t => t.date <= endDate);
+          }
         } else {
-          if (startDate) transactions = transactions.filter(t => t.date >= startDate);
-          if (endDate) transactions = transactions.filter(t => t.date <= endDate);
+          throw queryError;
         }
-      } else {
-        throw queryError;
+      }
+
+      if (isFullHistory) {
+        fullHistoryCache.set(companyId, { data: transactions, expiresAt: Date.now() + FULL_HISTORY_CACHE_TTL_MS });
       }
     }
+
+    const usedIndexedRange = !isFullHistory;
 
     // Filtres additionnels (rarement combinés avec month/dates, faible volume)
     if (type) {
@@ -127,28 +155,30 @@ router.get('/:companyId', async (req, res) => {
 });
 
 // GET /api/transactions/:companyId/all-months - Liste de tous les mois avec transactions
+// Réutilise le même cache "historique complet" que GET /:companyId - c'est
+// un scan complet équivalent, pas la peine de payer deux fois le même coût.
 router.get('/:companyId/all-months', async (req, res) => {
   try {
     const db = getDb();
     const { companyId } = req.params;
-    
-    const snapshot = await db.collection('transactions')
-      .where('companyId', '==', companyId)
-      .get();
-    
+
+    let allTransactions;
+    if (fullHistoryCache.has(companyId) && Date.now() < fullHistoryCache.get(companyId).expiresAt) {
+      allTransactions = fullHistoryCache.get(companyId).data;
+    } else {
+      const snapshot = await db.collection('transactions').where('companyId', '==', companyId).get();
+      allTransactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      fullHistoryCache.set(companyId, { data: allTransactions, expiresAt: Date.now() + FULL_HISTORY_CACHE_TTL_MS });
+    }
+
     const months = new Set();
-    snapshot.docs.forEach(doc => {
-      const data = doc.data();
-      if (data.date) {
-        // Extraire YYYY-MM de la date
-        const month = data.date.substring(0, 7);
-        months.add(month);
-      }
+    allTransactions.forEach(t => {
+      if (t.date) months.add(t.date.substring(0, 7));
     });
-    
+
     // Trier les mois (plus récent en premier)
     const sortedMonths = Array.from(months).sort((a, b) => b.localeCompare(a));
-    
+
     res.json(sortedMonths);
   } catch (error) {
     console.error('Erreur GET all-months transactions:', error);
@@ -182,6 +212,7 @@ router.post('/', async (req, res) => {
 
     const docRef = await db.collection('transactions').add(transaction);
     console.log('[POST transaction] Transaction créée:', docRef.id, 'status:', status);
+    invalidateFullHistoryCache(data.companyId);
 
     // Mettre à jour le budget si validé
     if (status === 'validated') {
@@ -226,6 +257,7 @@ router.put('/:id/status', async (req, res) => {
       validatedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
+    invalidateFullHistoryCache(transaction.data().companyId);
 
     // Mettre à jour le budget si validé
     if (status === 'validated') {
@@ -272,8 +304,9 @@ router.put('/:id', async (req, res) => {
     if (date !== undefined) updateData.date = date;
 
     await transactionRef.update(updateData);
+    invalidateFullHistoryCache(oldData.companyId);
 
-    // Si la transaction était validée et que le montant/catégorie a changé, 
+    // Si la transaction était validée et que le montant/catégorie a changé,
     // on doit ajuster les budgets (soustraire l'ancien, ajouter le nouveau)
     if (oldData.status === 'validated') {
       const oldMonth = oldData.date ? oldData.date.substring(0, 7) : getCurrentMonth();
@@ -321,7 +354,8 @@ router.delete('/:id', async (req, res) => {
     
     await transactionRef.delete();
     console.log(`[DELETE transaction] Transaction ${id} supprimée`);
-    
+    invalidateFullHistoryCache(data.companyId);
+
     res.json({ success: true });
   } catch (error) {
     console.error('Erreur DELETE transaction:', error);
