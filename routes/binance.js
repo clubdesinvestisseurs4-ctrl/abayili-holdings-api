@@ -41,24 +41,43 @@ async function binanceSignedGet(path, params = {}, baseUrl = BINANCE_BASE_URL) {
 
 // Cache mémoire court (60s), même logique que pour Pionex.
 let cache = { data: null, expiresAt: 0 };
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 120_000;
 
 // GET /api/binance/status - Solde spot live, converti en $ et FCFA
+//
+// Correctif 2026-09-19 : la version précédente appelait /api/v3/ticker/price
+// SANS filtre, qui renvoie le prix des ~3700 paires cotées sur Binance à
+// chaque cache-miss - poids largement plus élevé que nécessaire pour
+// afficher 1-2 actifs détenus. Ça a fait bannir temporairement l'IP du
+// serveur par Binance ("Way too much request weight used"), cassant le
+// widget. On ne demande désormais les prix QUE pour les actifs réellement
+// détenus (paramètre `symbols`, poids proportionnel au nombre demandé).
 router.get('/status', async (req, res) => {
   try {
     if (cache.data && Date.now() < cache.expiresAt) {
       return res.json(cache.data);
     }
 
-    const [account, tickersRes] = await Promise.all([
-      binanceSignedGet('/api/v3/account'),
-      fetch(`${BINANCE_BASE_URL}/api/v3/ticker/price`),
-    ]);
-    const tickers = await tickersRes.json();
-    const priceMap = {};
-    tickers.forEach(t => { priceMap[t.symbol] = parseFloat(t.price); });
-
+    const account = await binanceSignedGet('/api/v3/account');
     const rawBalances = (account.balances || []).filter(b => parseFloat(b.free) + parseFloat(b.locked) > 0);
+
+    const symbolsNeeded = rawBalances
+      .filter(b => !STABLECOINS.has(b.asset))
+      .map(b => `${b.asset}USDT`);
+
+    const priceMap = {};
+    if (symbolsNeeded.length > 0) {
+      const symbolsParam = encodeURIComponent(JSON.stringify(symbolsNeeded));
+      const tickersRes = await fetch(`${BINANCE_BASE_URL}/api/v3/ticker/price?symbols=${symbolsParam}`);
+      const tickers = await tickersRes.json();
+      if (Array.isArray(tickers)) {
+        tickers.forEach(t => { priceMap[t.symbol] = parseFloat(t.price); });
+      }
+      // Symbole sans marché direct vers USDT (ex: actif illiquide/délisté) -
+      // ignoré silencieusement (usdValue à 0) plutôt que de faire échouer
+      // tout le widget pour un seul actif marginal.
+    }
+
     let totalUsd = 0;
     const holdings = rawBalances.map(b => {
       const amount = parseFloat(b.free) + parseFloat(b.locked);
