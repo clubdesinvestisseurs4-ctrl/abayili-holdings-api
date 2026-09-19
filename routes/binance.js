@@ -108,6 +108,22 @@ router.get('/status', async (req, res) => {
 });
 
 let futuresCache = { data: null, expiresAt: 0 };
+// exchangeInfo liste les contrats et leurs échéances - quasi statique
+// (change seulement au listage trimestriel d'un nouveau contrat), donc
+// mis en cache bien plus longtemps que le reste (voir le correctif
+// "poids de requête" du 2026-09-19 sur /status ci-dessus, même cause).
+let exchangeInfoCache = { data: null, expiresAt: 0 };
+const EXCHANGE_INFO_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+async function getFuturesExchangeInfo() {
+  if (exchangeInfoCache.data && Date.now() < exchangeInfoCache.expiresAt) {
+    return exchangeInfoCache.data;
+  }
+  const res = await fetch(`${BINANCE_FUTURES_URL}/fapi/v1/exchangeInfo`);
+  const data = await res.json();
+  exchangeInfoCache = { data, expiresAt: Date.now() + EXCHANGE_INFO_CACHE_TTL_MS };
+  return data;
+}
 
 // GET /api/binance/carry-status - Position(s) futures ouvertes + solde du
 // wallet Futures, pour suivre le cash-and-carry (spot déjà couvert par
@@ -120,12 +136,11 @@ router.get('/carry-status', async (req, res) => {
       return res.json(futuresCache.data);
     }
 
-    const [positions, balances, exchangeInfoRes] = await Promise.all([
+    const [positions, balances, exchangeInfo] = await Promise.all([
       binanceSignedGet('/fapi/v2/positionRisk', {}, BINANCE_FUTURES_URL),
       binanceSignedGet('/fapi/v2/balance', {}, BINANCE_FUTURES_URL),
-      fetch(`${BINANCE_FUTURES_URL}/fapi/v1/exchangeInfo`),
+      getFuturesExchangeInfo(),
     ]);
-    const exchangeInfo = await exchangeInfoRes.json();
     const deliveryDateBySymbol = {};
     (exchangeInfo.symbols || []).forEach(s => { deliveryDateBySymbol[s.symbol] = s.deliveryDate; });
 
