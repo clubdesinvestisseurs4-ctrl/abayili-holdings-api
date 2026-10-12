@@ -30,11 +30,11 @@ router.get('/:companyId', async (req, res) => {
   }
 });
 
-// POST /api/valuations - Ajouter un relevé {companyId, date, value, note?}
+// POST /api/valuations - Ajouter un relevé {companyId, date, value, note?, fundLabel?}
 router.post('/', async (req, res) => {
   try {
     const db = getDb();
-    const { companyId, date, value, note } = req.body;
+    const { companyId, date, value, note, fundLabel } = req.body;
     if (!companyId || !date || typeof value !== 'number') {
       return res.status(400).json({ error: 'companyId, date et value (nombre) sont requis' });
     }
@@ -43,6 +43,7 @@ router.post('/', async (req, res) => {
       date,
       value,
       note: note || '',
+      fundLabel: fundLabel || '',
       createdBy: req.user.uid,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
