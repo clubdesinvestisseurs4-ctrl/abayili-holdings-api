@@ -78,24 +78,35 @@ router.get('/status', async (req, res) => {
       // tout le widget pour un seul actif marginal.
     }
 
-    let totalUsd = 0;
+    // Cash vs placement (demande 2026-10-15) : un stablecoin (USDT...) est accroché
+    // 1:1 au dollar, sans exposition de marché - c'est de la liquidité, donc "cash".
+    // Tout le reste (BTC, ETH...) varie avec le marché - c'est un "placement", au
+    // même titre que les fonds FCP (gain/perte latent). isStablecoin par actif
+    // permet au frontend d'afficher les deux sous-totaux séparément.
+    let totalUsd = 0, cashUsd = 0, placementUsd = 0;
     const holdings = rawBalances.map(b => {
       const amount = parseFloat(b.free) + parseFloat(b.locked);
+      const isStablecoin = STABLECOINS.has(b.asset);
       let usdValue;
-      if (STABLECOINS.has(b.asset)) {
+      if (isStablecoin) {
         usdValue = amount;
       } else {
         const price = priceMap[`${b.asset}USDT`];
         usdValue = price ? amount * price : 0;
       }
       totalUsd += usdValue;
-      return { asset: b.asset, amount, usdValue };
+      if (isStablecoin) cashUsd += usdValue; else placementUsd += usdValue;
+      return { asset: b.asset, amount, usdValue, isStablecoin };
     }).filter(h => h.usdValue > 0.01).sort((a, b) => b.usdValue - a.usdValue);
 
     const payload = {
       holdings,
       totalUsd,
       totalFcfa: totalUsd * USD_TO_FCFA,
+      cashUsd,
+      cashFcfa: cashUsd * USD_TO_FCFA,
+      placementUsd,
+      placementFcfa: placementUsd * USD_TO_FCFA,
       fetchedAt: new Date().toISOString(),
     };
 
