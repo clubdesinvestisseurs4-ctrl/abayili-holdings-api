@@ -17,6 +17,21 @@ const BINANCE_FUTURES_URL = 'https://fapi.binance.com';
 const USD_TO_FCFA = 600; // même taux fixe que le reste de l'app
 const STABLECOINS = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'DAI', 'TUSD']);
 
+// Un bannissement temporaire par Binance ("Way too much request weight used; IP banned
+// until <timestamp>") dure jusqu'à une heure fixe, quel que soit le nombre de nouvelles
+// tentatives entre-temps - les retenter ne fait que gaspiller des requêtes (et risque de
+// prolonger le bannissement une fois levé). 429 plutôt que 502 : le client (voir
+// RETRYABLE_STATUSES dans services/api.js du frontend) ne retente pas un 429, il affiche
+// l'erreur directement au lieu de marteler l'API pendant ~1 minute pour rien.
+function sendBinanceError(res, error, fallbackMessage) {
+  console.error(fallbackMessage + ':', error.message);
+  const banned = /banned/i.test(error.message);
+  res.status(banned ? 429 : 502).json({
+    error: banned ? 'Binance a temporairement limité ce serveur (trop de requêtes) - réessaie dans quelques minutes' : fallbackMessage,
+    detail: error.message,
+  });
+}
+
 function sign(queryString, secret) {
   return crypto.createHmac('sha256', secret).update(queryString).digest('hex');
 }
@@ -39,9 +54,12 @@ async function binanceSignedGet(path, params = {}, baseUrl = BINANCE_BASE_URL) {
   return body;
 }
 
-// Cache mémoire court (60s), même logique que pour Pionex.
+// Cache mémoire, même logique que pour Pionex. Porté à 5 min le 2026-10-16 (était 2 min) :
+// /status est désormais aussi appelé depuis Portefeuille Global (en plus de la page RC
+// Actifs), et le cumul a déclenché un bannissement temporaire de l'IP par Binance ("Way
+// too much request weight used") - un solde affiché n'a pas besoin d'être à la minute près.
 let cache = { data: null, expiresAt: 0 };
-const CACHE_TTL_MS = 120_000;
+const CACHE_TTL_MS = 300_000;
 
 // GET /api/binance/status - Solde spot live, converti en $ et FCFA
 //
@@ -113,8 +131,7 @@ router.get('/status', async (req, res) => {
     cache = { data: payload, expiresAt: Date.now() + CACHE_TTL_MS };
     res.json(payload);
   } catch (error) {
-    console.error('Erreur GET binance status:', error.message);
-    res.status(502).json({ error: 'Impossible de récupérer les données Binance', detail: error.message });
+    sendBinanceError(res, error, 'Impossible de récupérer les données Binance');
   }
 });
 
@@ -186,8 +203,7 @@ router.get('/carry-status', async (req, res) => {
     futuresCache = { data: payload, expiresAt: Date.now() + CACHE_TTL_MS };
     res.json(payload);
   } catch (error) {
-    console.error('Erreur GET binance carry-status:', error.message);
-    res.status(502).json({ error: 'Impossible de récupérer la position futures Binance', detail: error.message });
+    sendBinanceError(res, error, 'Impossible de récupérer la position futures Binance');
   }
 });
 
